@@ -15,7 +15,9 @@ use Phergie\Irc\Bot\React\EventQueueInterface as Queue;
 use Phergie\Irc\Bot\React\AbstractPlugin;
 use Phergie\Irc\ConnectionInterface;
 use Phergie\Irc\Client\React\WriteStream;
+use Phergie\Irc\Client\React\LoopAwareInterface;
 use \Psr\Log\LoggerInterface;
+use React\EventLoop\LoopInterface;
 
 /**
  * Plugin class.
@@ -23,11 +25,14 @@ use \Psr\Log\LoggerInterface;
  * @category Phergie
  * @package Phergie\Irc\Plugin\React\KeepAlive
  */
-class Plugin extends AbstractPlugin
+class Plugin extends AbstractPlugin implements LoopAwareInterface
 {
 
     protected $allowDisconnect = false;
+    protected $connectionCooldown = false;
+    protected $connectionCooldownTimeout = 5;
     public $lastActivity = array();
+    protected $loop;
     public $timeout = 600;
     public $quitMessage = 'Ping timeout, reconnecting...';
 
@@ -54,6 +59,19 @@ class Plugin extends AbstractPlugin
         if (isset($config['quitMessage'])) {
             $this->quitMessage = (string) $config['quitMessage'];
         }
+        if (isset($config['connectionCooldownTimeout'])) {
+            $this->connectionCooldownTimeout = $config['connectionCooldownTimeout'];
+        }
+    }
+
+    /**
+     * Sets the event loop to use.
+     *
+     * @param \React\EventLoop\LoopInterface $loop
+     */
+    public function setLoop(LoopInterface $loop)
+    {
+        $this->loop = $loop;
     }
 
     /**
@@ -67,14 +85,21 @@ class Plugin extends AbstractPlugin
         if ($this->allowDisconnect) {
             return;
         }
-        $mask = $this->getConnectionMask($connection);
-        // We unset the mask here so we can get the updated event queue when the activity function is hit
-        unset($this->lastActivity[$mask]);
+        if (!$this->connectionCooldown) {
+            $mask = $this->getConnectionMask($connection);
+            // We unset the mask here so we can get the updated event queue when the activity function is hit
+            unset($this->lastActivity[$mask]);
 
-        $logger->debug('Attemping reconnect: ' . $mask);
+            $logger->debug('Attemping reconnect: ' . $mask);
 
-        $client = $this->getClient();
-        $client->addConnection($connection);
+            $client = $this->getClient();
+            $client->addConnection($connection);
+            $this->connectionCooldown = true;
+            $self = $this;
+            $this->loop->addTimer($this->connectionCooldownTimeout, function () use ($self) {
+                $self->connectionCooldown = false;
+            });
+        }
     }
 
     /**
